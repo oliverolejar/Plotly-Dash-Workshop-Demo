@@ -6,6 +6,7 @@ sort/filter the table. Everything below is what makes that possible.
 
 import dash_bootstrap_components as dbc
 import plotly.express as px
+import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, dash_table, dcc, html
 from dash.exceptions import PreventUpdate
 
@@ -14,7 +15,17 @@ continents = sorted(df["continent"].unique())
 years = sorted(df["year"].unique())
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
-app.title = "Gapminder Explorer"
+app.title = "Plotly/Dash Explorer"
+
+
+def _placeholder_figure(text):
+    figure = go.Figure()
+    figure.update_layout(
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        annotations=[{"text": text, "xref": "paper", "yref": "paper", "showarrow": False, "font": {"size": 16}}],
+    )
+    return figure
 
 app.layout = dbc.Container(
     [
@@ -65,6 +76,11 @@ app.layout = dbc.Container(
             className="mb-4",
         ),
         dcc.Graph(id="gapminder-graph"),
+        html.H4("Country trend", className="mt-4"),
+        dcc.Graph(
+            id="country-trend",
+            figure=_placeholder_figure("Click a bubble above to see that country's life expectancy over time."),
+        ),
         html.H4("Underlying data", className="mt-4"),
         dash_table.DataTable(
             id="gapminder-table",
@@ -124,6 +140,7 @@ def update_view(selected_continents, selected_year):
         size="pop",
         color="continent",
         hover_name="country",
+        custom_data=["country"],
         log_x=True,
         size_max=60,
         range_x=[df["gdpPercap"].min(), df["gdpPercap"].max()],
@@ -133,6 +150,24 @@ def update_view(selected_continents, selected_year):
 
     columns = ["country", "continent", "year", "lifeExp", "gdpPercap", "pop"]
     return figure, filtered[columns].to_dict("records")
+
+
+@app.callback(
+    Output("country-trend", "figure"),
+    Input("gapminder-graph", "clickData"),
+)
+def show_country_trend(click_data):
+    if not click_data:
+        raise PreventUpdate
+    country = click_data["points"][0]["customdata"][0]
+    country_df = df[df["country"] == country]
+    return px.line(
+        country_df,
+        x="year",
+        y="lifeExp",
+        markers=True,
+        title=f"Life expectancy over time - {country}",
+    )
 
 
 if __name__ == "__main__":
