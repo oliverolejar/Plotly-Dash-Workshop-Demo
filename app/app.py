@@ -5,6 +5,7 @@ sort/filter the table. Everything below is what makes that possible.
 """
 
 import dash_bootstrap_components as dbc
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, dash_table, dcc, html
@@ -29,10 +30,11 @@ def _placeholder_figure(text):
 
 app.layout = dbc.Container(
     [
-        html.H1("Gapminder Explorer", className="mt-4"),
+        html.H1("Plotly/Dash Explorer", className="mt-4"),
         html.P(
-            "Pick continents and a year below - the chart and table update "
-            "live. No code, no formulas, just clicking.",
+            "Use the controls below to filter the data, or click any bubble "
+            "in the chart to look more closely at one country. The chart "
+            "and table update as soon as you interact with them.",
             className="text-muted",
         ),
         dbc.Row(
@@ -45,6 +47,11 @@ app.layout = dbc.Container(
                             options=[{"label": c, "value": c} for c in continents],
                             value=continents,
                             multi=True,
+                        ),
+                        html.Small(
+                            "Add or remove continents to change what "
+                            "appears in the chart and table below.",
+                            className="text-muted",
                         ),
                     ],
                     md=6,
@@ -69,11 +76,25 @@ app.layout = dbc.Container(
                             className="mt-2",
                         ),
                         dcc.Interval(id="year-interval", interval=800, disabled=True),
+                        html.Small(
+                            "Drag the slider to jump to a specific year, or "
+                            "press the button above to advance through the "
+                            "years automatically.",
+                            className="text-muted d-block mt-2",
+                        ),
                     ],
                     md=6,
                 ),
             ],
             className="mb-4",
+        ),
+        html.P(
+            "Each bubble represents one country in the selected year. "
+            "Horizontal position shows GDP per capita, vertical position "
+            "shows life expectancy, bubble size shows population, and "
+            "color shows continent. Click a bubble to see that country's "
+            "trend below.",
+            className="text-muted small",
         ),
         dcc.Graph(id="gapminder-graph"),
         html.H4("Country trend", className="mt-4"),
@@ -81,7 +102,33 @@ app.layout = dbc.Container(
             id="country-trend",
             figure=_placeholder_figure("Click a bubble above to see that country's life expectancy over time."),
         ),
-        html.H4("Underlying data", className="mt-4"),
+        dbc.Row(
+            [
+                dbc.Col(html.H4("Underlying data", className="mt-4"), width="auto"),
+                dbc.Col(
+                    dbc.Button(
+                        "⬇ Download CSV",
+                        id="download-button",
+                        color="secondary",
+                        outline=True,
+                        size="sm",
+                        className="mt-4",
+                    ),
+                    width="auto",
+                    className="ms-auto",
+                ),
+            ],
+            className="align-items-center",
+        ),
+        html.P(
+            "This table lists the exact rows behind the chart above. Click "
+            "a column header to sort, or type into the row beneath the "
+            "headers to filter - for example, a continent name, or "
+            "\">50\" under life expectancy. Use the button above to save "
+            "the rows you're currently viewing as a CSV file.",
+            className="text-muted small",
+        ),
+        dcc.Download(id="download-dataframe-csv"),
         dash_table.DataTable(
             id="gapminder-table",
             columns=[
@@ -168,6 +215,18 @@ def show_country_trend(click_data):
         markers=True,
         title=f"Life expectancy over time - {country}",
     )
+
+
+@app.callback(
+    Output("download-dataframe-csv", "data"),
+    Input("download-button", "n_clicks"),
+    State("gapminder-table", "data"),
+)
+def download_csv(n_clicks, table_data):
+    if not n_clicks:
+        raise PreventUpdate
+    export_df = pd.DataFrame(table_data)
+    return dcc.send_data_frame(export_df.to_csv, "gapminder_filtered.csv", index=False)
 
 
 if __name__ == "__main__":
