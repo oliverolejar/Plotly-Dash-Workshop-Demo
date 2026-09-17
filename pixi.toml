@@ -5,7 +5,8 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
-app = "python app/app.py"
+generic_app = "python demo/generic_app.py"
+notebook = "jupyter lab archived/01_plotly_intro.ipynb"
 
 [dependencies]
 plotly = ">=7.0.0,<8"
