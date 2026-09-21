@@ -8,6 +8,7 @@ that possible.
 from pathlib import Path
 
 import dash_bootstrap_components as dbc
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -24,8 +25,20 @@ FALLBACK_LIGHTSHEET_PATH = Path(
 
 MISSING_LABEL = "(not recorded)"
 
+ATLAS_PATH = Path(__file__).parent / "atlas_coarse_half.npz"
+
 BACKGROUND_REGION = "Unknown_Label_0"
 STAINS = ["Abeta", "Iba1"]
+# from the atlas sform: array axis 0 runs left-right, 1 posterior-anterior, 2 inferior-superior
+ORIENTATIONS = {"axial": 2, "coronal": 1, "sagittal": 0}
+MAP_MEASURES = [
+    "Abeta+fieldfrac",
+    "Abeta+density",
+    "Abeta+count",
+    "Iba1+fieldfrac",
+    "Iba1+density",
+    "Iba1+count",
+]
 SPLIT_COLUMNS = ["sex", "genotype", "batch_id"]
 TREATMENT_ORDER = ["PBS", "Lecanemab", "N control", "P control", MISSING_LABEL]
 METRIC_ORDER = [
@@ -50,6 +63,27 @@ def load_lightsheet_data():
 
 
 lightsheet_df = load_lightsheet_data()
+
+
+ATLAS = np.load(ATLAS_PATH)["labels"]
+
+
+def _atlas_slice(orientation, slice_index):
+    axis = ORIENTATIONS[orientation]
+    # the slider can briefly hold a value from the previous orientation, which has a
+    # different number of slices
+    clamped = min(max(int(slice_index), 0), ATLAS.shape[axis] - 1)
+    # transposing puts left-right across the image, so the left hemisphere reads on the left
+    return np.take(ATLAS, clamped, axis=axis).T
+
+
+def _busiest_slice(orientation):
+    axis = ORIENTATIONS[orientation]
+    counts = [
+        (index, len(np.unique(np.take(ATLAS, index, axis=axis))))
+        for index in range(0, ATLAS.shape[axis], 2)
+    ]
+    return max(counts, key=lambda pair: pair[1])[0]
 
 
 def _options_for(column):
@@ -162,6 +196,10 @@ sexes = _options_for("sex")
 genotypes = _options_for("genotype")
 treatments = _options_for("treatment")
 regions = _options_for("name")
+DEFAULT_SLICES = {name: _busiest_slice(name) for name in ORIENTATIONS}
+REGION_NAMES = np.array(
+    lightsheet_df.drop_duplicates("index").sort_values("index")["name"].tolist()
+)
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
 app.title = "SPIMquant Dataset Explorer (Plotly/Dash Demo)"
@@ -323,6 +361,67 @@ app.layout = dbc.Container(
             className="text-muted d-block mb-2",
         ),
         dcc.Graph(id="group-box-plot"),
+        html.H4("Brain map", className="mt-5"),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        html.Label("Measurement"),
+                        dcc.Dropdown(
+                            id="map-measure-dropdown",
+                            options=[{"label": m, "value": m} for m in MAP_MEASURES],
+                            value="Abeta+fieldfrac",
+                            clearable=False,
+                        ),
+                    ],
+                    md=6,
+                ),
+                dbc.Col(
+                    [
+                        html.Label("Orientation"),
+                        dcc.Dropdown(
+                            id="map-orientation-dropdown",
+                            options=[{"label": o, "value": o} for o in ORIENTATIONS],
+                            value="axial",
+                            clearable=False,
+                        ),
+                    ],
+                    md=6,
+                ),
+            ],
+            className="mb-2",
+        ),
+        html.Label("Slice"),
+        dcc.Slider(
+            id="slice-slider",
+            min=0,
+            max=ATLAS.shape[ORIENTATIONS["axial"]] - 1,
+            step=1,
+            value=DEFAULT_SLICES["axial"],
+            marks=None,
+            tooltip={"placement": "bottom", "always_visible": True},
+        ),
+        dbc.Button(
+            "▶ Play",
+            id="slice-play-button",
+            color="primary",
+            outline=True,
+            size="sm",
+            className="mt-2",
+        ),
+        dcc.Interval(id="slice-interval", interval=200, disabled=True),
+        html.Small(
+            "Each region is shaded by the average of the per-mouse values for the mice "
+            "you have selected above. Drag the slider to move through the brain. The "
+            "left hemisphere is on the left of the image, and the whole-image "
+            "background record is left out. Note that the two wild-type mice have an "
+            "artifactually high Abeta field fraction - a high fraction with almost no "
+            "detected objects, which is background rather than plaque - so deselecting "
+            "\"WT\" under Genotype gives a cleaner amyloid map. Press the button above "
+            "to sweep through the slices automatically.",
+            className="text-muted d-block mb-2",
+        ),
+        dcc.Graph(id="brain-map"),
     ],
     className="pb-5",
 )
@@ -393,6 +492,103 @@ def update_box_plot(
     _facet_labels_to_yaxis_titles(figure)
     figure.update_xaxes(title_text="")
     figure.update_layout(height=700, boxmode="group")
+    return figure
+
+
+@app.callback(
+    Output("slice-slider", "max"),
+    Output("slice-slider", "value"),
+    Input("map-orientation-dropdown", "value"),
+)
+def update_slice_range(orientation):
+    return ATLAS.shape[ORIENTATIONS[orientation]] - 1, DEFAULT_SLICES[orientation]
+
+
+@app.callback(
+    Output("slice-interval", "disabled"),
+    Output("slice-play-button", "children"),
+    Input("slice-play-button", "n_clicks"),
+    State("slice-interval", "disabled"),
+)
+def toggle_slice_play(n_clicks, is_disabled):
+    if not n_clicks:
+        raise PreventUpdate
+    if is_disabled:
+        return False, "⏸ Pause"
+    return True, "▶ Play"
+
+
+@app.callback(
+    # update_slice_range also writes this prop when the orientation changes
+    Output("slice-slider", "value", allow_duplicate=True),
+    Input("slice-interval", "n_intervals"),
+    State("slice-slider", "value"),
+    State("map-orientation-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def advance_slice(n_intervals, current_slice, orientation):
+    if not n_intervals:
+        raise PreventUpdate
+    return (int(current_slice) + 1) % ATLAS.shape[ORIENTATIONS[orientation]]
+
+
+@app.callback(
+    Output("brain-map", "figure"),
+    Input("sex-dropdown", "value"),
+    Input("genotype-dropdown", "value"),
+    Input("treatment-dropdown", "value"),
+    Input("region-dropdown", "value"),
+    Input("map-measure-dropdown", "value"),
+    Input("map-orientation-dropdown", "value"),
+    Input("slice-slider", "value"),
+)
+def update_brain_map(
+    selected_sexes,
+    selected_genotypes,
+    selected_treatments,
+    selected_regions,
+    measure,
+    orientation,
+    slice_index,
+):
+    filtered = _filtered_df(selected_sexes, selected_genotypes, selected_treatments, selected_regions)
+    filtered = filtered[filtered["name"] != BACKGROUND_REGION]
+    if filtered.empty:
+        return _placeholder_figure("No brain regions match the current filters.")
+
+    means = filtered.groupby("index")[measure].mean()
+    # label 0 is background, and any region the filters excluded stays NaN so it renders blank
+    lookup = np.full(len(REGION_NAMES), np.nan)
+    lookup[means.index.to_numpy()] = means.to_numpy()
+
+    # hold the colour range across every slice, or the same colour would mean a different
+    # value on each one as the slider moves
+    finite = lookup[np.isfinite(lookup)]
+    limits = {}
+    if finite.size and finite.min() < finite.max():
+        limits = {"zmin": finite.min(), "zmax": finite.max()}
+
+    labels = _atlas_slice(orientation, slice_index)
+    figure = px.imshow(
+        lookup[labels],
+        origin="lower",
+        # reversed so the darkest colour marks the most concentrated regions
+        color_continuous_scale="Viridis_r",
+        labels={"color": measure},
+        **limits,
+    )
+    figure.update_traces(
+        customdata=REGION_NAMES[labels],
+        hovertemplate="%{customdata}<br>" + measure + ": %{z:.4g}<extra></extra>",
+    )
+    figure.update_xaxes(visible=False)
+    # atlas voxels are isotropic, so the slice must not be stretched to fill the plot area
+    figure.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
+    figure.update_layout(
+        height=600,
+        margin={"l": 10, "r": 10, "t": 40, "b": 10},
+        title=f"Mean {measure} - {orientation} slice {slice_index}, {filtered['participant_id'].nunique()} mice",
+    )
     return figure
 
 
