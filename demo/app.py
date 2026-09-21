@@ -1,16 +1,16 @@
-"""Gapminder explorer: the notebook's animated bubble chart, handed to a viewer.
+"""SPIMquant explorer: the lightsheet region table, handed to a viewer.
 
-No code required to use this app - pick continents, drag the year slider,
-sort/filter the table. Everything below is what makes that possible.
+No code required to use this app - pick the animals and brain regions you
+care about, then sort and filter the table. Everything below is what makes
+that possible.
 """
 
 from pathlib import Path
 
 import dash_bootstrap_components as dbc
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, dash_table, dcc, html
+from dash.dash_table.Format import Format, Scheme
 from dash.exceptions import PreventUpdate
 
 LOCAL_LIGHTSHEET_PATH = Path(__file__).parent / "seg-coarse_from-ABAv3_desc-gmm+n3k1_allsubjects.tsv"
@@ -19,6 +19,8 @@ FALLBACK_LIGHTSHEET_PATH = Path(
     "treatmenteffect_sexstratified_betterN4maskdropfailed/"
     "seg-coarse_from-ABAv3_desc-gmm+n3k1_allsubjects.tsv"
 ).expanduser()
+
+MISSING_LABEL = "(not recorded)"
 
 
 def load_lightsheet_data():
@@ -36,100 +38,127 @@ def load_lightsheet_data():
 
 lightsheet_df = load_lightsheet_data()
 
-df = px.data.gapminder()
-continents = sorted(df["continent"].unique())
-years = sorted(df["year"].unique())
+
+def _options_for(column):
+    values = sorted(lightsheet_df[column].dropna().unique())
+    if lightsheet_df[column].isna().any():
+        values.append(MISSING_LABEL)
+    return values
+
+
+def _mask_for(column, selected):
+    if not selected:
+        return pd.Series(False, index=lightsheet_df.index)
+    mask = lightsheet_df[column].isin(selected)
+    if MISSING_LABEL in selected:
+        mask = mask | lightsheet_df[column].isna()
+    return mask
+
+
+def _table_columns():
+    columns = []
+    for column in lightsheet_df.columns:
+        if pd.api.types.is_numeric_dtype(lightsheet_df[column]):
+            columns.append(
+                {
+                    "name": column,
+                    "id": column,
+                    "type": "numeric",
+                    "format": Format(precision=4, scheme=Scheme.decimal_or_exponent),
+                }
+            )
+        else:
+            columns.append({"name": column, "id": column, "type": "text"})
+    return columns
+
+
+sexes = _options_for("sex")
+genotypes = _options_for("genotype")
+treatments = _options_for("treatment")
+regions = _options_for("name")
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
-app.title = "Plotly/Dash Explorer"
-
-
-def _placeholder_figure(text):
-    figure = go.Figure()
-    figure.update_layout(
-        xaxis={"visible": False},
-        yaxis={"visible": False},
-        annotations=[{"text": text, "xref": "paper", "yref": "paper", "showarrow": False, "font": {"size": 16}}],
-    )
-    return figure
+app.title = "SPIMquant Dataset Explorer (Plotly/Dash Demo)"
 
 app.layout = dbc.Container(
     [
-        html.H1("Plotly/Dash Explorer", className="mt-4"),
+        html.H1("SPIMquant Dataset Explorer (Plotly/Dash Demo)", className="mt-4"),
         html.P(
-            "Use the controls below to filter the data, or click any bubble "
-            "in the chart to look more closely at one country. The chart "
-            "and table update as soon as you interact with them.",
+            "Every row is one brain region in one mouse, with the Abeta and "
+            "Iba1 measurements for that region. Use the dropdowns to narrow "
+            "down which animals and regions you are looking at, then sort "
+            "and filter the table itself to go further.",
             className="text-muted",
         ),
         dbc.Row(
             [
                 dbc.Col(
                     [
-                        html.Label("Continents"),
+                        html.Label("Sex"),
                         dcc.Dropdown(
-                            id="continent-dropdown",
-                            options=[{"label": c, "value": c} for c in continents],
-                            value=continents,
+                            id="sex-dropdown",
+                            options=[{"label": s, "value": s} for s in sexes],
+                            value=sexes,
                             multi=True,
                         ),
-                        html.Small(
-                            "Add or remove continents to change what "
-                            "appears in the chart and table below.",
-                            className="text-muted",
-                        ),
                     ],
-                    md=6,
+                    md=4,
                 ),
                 dbc.Col(
                     [
-                        html.Label("Year"),
-                        dcc.Slider(
-                            id="year-slider",
-                            min=years[0],
-                            max=years[-1],
-                            value=years[-1],
-                            step=None,
-                            marks={str(y): str(y) for y in years},
-                        ),
-                        dbc.Button(
-                            "▶ Play",
-                            id="play-button",
-                            color="primary",
-                            outline=True,
-                            size="sm",
-                            className="mt-2",
-                        ),
-                        dcc.Interval(id="year-interval", interval=800, disabled=True),
-                        html.Small(
-                            "Drag the slider to jump to a specific year, or "
-                            "press the button above to advance through the "
-                            "years automatically.",
-                            className="text-muted d-block mt-2",
+                        html.Label("Genotype"),
+                        dcc.Dropdown(
+                            id="genotype-dropdown",
+                            options=[{"label": g, "value": g} for g in genotypes],
+                            value=genotypes,
+                            multi=True,
                         ),
                     ],
-                    md=6,
+                    md=4,
+                ),
+                dbc.Col(
+                    [
+                        html.Label("Treatment"),
+                        dcc.Dropdown(
+                            id="treatment-dropdown",
+                            options=[{"label": t, "value": t} for t in treatments],
+                            value=treatments,
+                            multi=True,
+                        ),
+                    ],
+                    md=4,
                 ),
             ],
+            className="mb-2",
+        ),
+        html.Small(
+            "These three describe the animal. The wild-type controls have no "
+            "treatment recorded - keep \"(not recorded)\" selected to see them.",
+            className="text-muted d-block mb-3",
+        ),
+        dbc.Row(
+            dbc.Col(
+                [
+                    html.Label("Brain region"),
+                    dcc.Dropdown(
+                        id="region-dropdown",
+                        options=[{"label": r, "value": r} for r in regions],
+                        value=regions,
+                        multi=True,
+                    ),
+                    html.Small(
+                        "Regions are split into left (L_) and right (R_) sides. "
+                        "\"Unknown_Label_0\" is the whole-image background record "
+                        "rather than a real region.",
+                        className="text-muted",
+                    ),
+                ]
+            ),
             className="mb-4",
-        ),
-        html.P(
-            "Each bubble represents one country in the selected year. "
-            "Horizontal position shows GDP per capita, vertical position "
-            "shows life expectancy, bubble size shows population, and "
-            "color shows continent. Click a bubble to see that country's "
-            "trend below.",
-            className="text-muted small",
-        ),
-        dcc.Graph(id="gapminder-graph"),
-        html.H4("Country trend", className="mt-4"),
-        dcc.Graph(
-            id="country-trend",
-            figure=_placeholder_figure("Click a bubble above to see that country's life expectancy over time."),
         ),
         dbc.Row(
             [
-                dbc.Col(html.H4("Underlying data", className="mt-4"), width="auto"),
+                dbc.Col(html.H4("Region measurements", className="mt-2"), width="auto"),
                 dbc.Col(
                     dbc.Button(
                         "⬇ Download CSV",
@@ -137,7 +166,7 @@ app.layout = dbc.Container(
                         color="secondary",
                         outline=True,
                         size="sm",
-                        className="mt-4",
+                        className="mt-2",
                     ),
                     width="auto",
                     className="ms-auto",
@@ -145,25 +174,30 @@ app.layout = dbc.Container(
             ],
             className="align-items-center",
         ),
+        html.P(id="row-count", className="text-muted small mb-1"),
         html.P(
-            "This table lists the exact rows behind the chart above. Click "
-            "a column header to sort, or type into the row beneath the "
-            "headers to filter - for example, a continent name, or "
-            "\">50\" under life expectancy. Use the button above to save "
-            "the rows you're currently viewing as a CSV file.",
+            "Click a column header to sort, or type into the row beneath the "
+            "headers to filter - for example, a region name under \"name\", or "
+            "\">10\" under \"Abeta+density\". Scroll sideways to reach every "
+            "column. Use the button above to save the rows you're currently "
+            "viewing as a CSV file.",
             className="text-muted small",
         ),
         dcc.Download(id="download-dataframe-csv"),
         dash_table.DataTable(
-            id="gapminder-table",
-            columns=[
-                {"name": col, "id": col}
-                for col in ["country", "continent", "year", "lifeExp", "gdpPercap", "pop"]
-            ],
+            id="spimquant-table",
+            columns=_table_columns(),
             sort_action="native",
             filter_action="native",
-            page_size=10,
+            page_size=15,
             style_table={"overflowX": "auto"},
+            style_cell={
+                "minWidth": "90px",
+                "maxWidth": "220px",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "textAlign": "left",
+            },
         ),
     ],
     className="pb-5",
@@ -171,87 +205,35 @@ app.layout = dbc.Container(
 
 
 @app.callback(
-    Output("year-interval", "disabled"),
-    Output("play-button", "children"),
-    Input("play-button", "n_clicks"),
-    State("year-interval", "disabled"),
+    Output("spimquant-table", "data"),
+    Output("row-count", "children"),
+    Input("sex-dropdown", "value"),
+    Input("genotype-dropdown", "value"),
+    Input("treatment-dropdown", "value"),
+    Input("region-dropdown", "value"),
 )
-def toggle_play(n_clicks, is_disabled):
-    if not n_clicks:
-        raise PreventUpdate
-    if is_disabled:
-        return False, "⏸ Pause"
-    return True, "▶ Play"
-
-
-@app.callback(
-    Output("year-slider", "value"),
-    Input("year-interval", "n_intervals"),
-    State("year-slider", "value"),
-)
-def advance_year(n_intervals, current_year):
-    if not n_intervals:
-        raise PreventUpdate
-    next_index = (years.index(current_year) + 1) % len(years)
-    return years[next_index]
-
-
-@app.callback(
-    Output("gapminder-graph", "figure"),
-    Output("gapminder-table", "data"),
-    Input("continent-dropdown", "value"),
-    Input("year-slider", "value"),
-)
-def update_view(selected_continents, selected_year):
-    filtered = df[df["continent"].isin(selected_continents) & (df["year"] == selected_year)]
-
-    figure = px.scatter(
-        filtered,
-        x="gdpPercap",
-        y="lifeExp",
-        size="pop",
-        color="continent",
-        hover_name="country",
-        custom_data=["country"],
-        log_x=True,
-        size_max=60,
-        range_x=[df["gdpPercap"].min(), df["gdpPercap"].max()],
-        range_y=[df["lifeExp"].min(), df["lifeExp"].max()],
-        title=f"Life expectancy vs. GDP per capita - {selected_year}",
+def update_table(selected_sexes, selected_genotypes, selected_treatments, selected_regions):
+    mask = (
+        _mask_for("sex", selected_sexes)
+        & _mask_for("genotype", selected_genotypes)
+        & _mask_for("treatment", selected_treatments)
+        & _mask_for("name", selected_regions)
     )
-
-    columns = ["country", "continent", "year", "lifeExp", "gdpPercap", "pop"]
-    return figure, filtered[columns].to_dict("records")
-
-
-@app.callback(
-    Output("country-trend", "figure"),
-    Input("gapminder-graph", "clickData"),
-)
-def show_country_trend(click_data):
-    if not click_data:
-        raise PreventUpdate
-    country = click_data["points"][0]["customdata"][0]
-    country_df = df[df["country"] == country]
-    return px.line(
-        country_df,
-        x="year",
-        y="lifeExp",
-        markers=True,
-        title=f"Life expectancy over time - {country}",
-    )
+    filtered = lightsheet_df[mask]
+    count = f"Showing {len(filtered)} of {len(lightsheet_df)} rows"
+    return filtered.to_dict("records"), count
 
 
 @app.callback(
     Output("download-dataframe-csv", "data"),
     Input("download-button", "n_clicks"),
-    State("gapminder-table", "data"),
+    State("spimquant-table", "derived_virtual_data"),
 )
 def download_csv(n_clicks, table_data):
     if not n_clicks:
         raise PreventUpdate
     export_df = pd.DataFrame(table_data)
-    return dcc.send_data_frame(export_df.to_csv, "gapminder_filtered.csv", index=False)
+    return dcc.send_data_frame(export_df.to_csv, "spimquant_filtered.csv", index=False)
 
 
 if __name__ == "__main__":
