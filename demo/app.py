@@ -4,12 +4,37 @@ No code required to use this app - pick continents, drag the year slider,
 sort/filter the table. Everything below is what makes that possible.
 """
 
+from pathlib import Path
+
 import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, dash_table, dcc, html
 from dash.exceptions import PreventUpdate
+
+LOCAL_LIGHTSHEET_PATH = Path(__file__).parent / "seg-coarse_from-ABAv3_desc-gmm+n3k1_allsubjects.tsv"
+FALLBACK_LIGHTSHEET_PATH = Path(
+    "~/lightsheet/mouse_app_lecanemab_ki3_aggregated/derivatives/spimquant-v0.9.0/group/"
+    "treatmenteffect_sexstratified_betterN4maskdropfailed/"
+    "seg-coarse_from-ABAv3_desc-gmm+n3k1_allsubjects.tsv"
+).expanduser()
+
+
+def load_lightsheet_data():
+    if LOCAL_LIGHTSHEET_PATH.exists():
+        print(f"Loading lightsheet data from local repo file: {LOCAL_LIGHTSHEET_PATH}")
+        return pd.read_csv(LOCAL_LIGHTSHEET_PATH, sep="\t")
+    if FALLBACK_LIGHTSHEET_PATH.exists():
+        print(f"Local file not found. Loading lightsheet data from fallback path: {FALLBACK_LIGHTSHEET_PATH}")
+        return pd.read_csv(FALLBACK_LIGHTSHEET_PATH, sep="\t")
+    raise FileNotFoundError(
+        "Could not find lightsheet data at either "
+        f"{LOCAL_LIGHTSHEET_PATH} or {FALLBACK_LIGHTSHEET_PATH}"
+    )
+
+
+lightsheet_df = load_lightsheet_data()
 
 df = px.data.gapminder()
 continents = sorted(df["continent"].unique())
