@@ -66,6 +66,56 @@ lightsheet_df = load_lightsheet_data()
 
 
 ATLAS = np.load(ATLAS_PATH)["labels"]
+# from the source atlas sform; the committed copy is half resolution, so 2 x 25um voxels
+ATLAS_ORIGIN = np.array([-5.7, -7.825, -2.825])
+ATLAS_SCALE = 0.05
+
+
+def _region_geometry():
+    centroids = np.full((len(REGION_NAMES), 3), np.nan)
+    voxels = np.zeros(len(REGION_NAMES))
+    flat = ATLAS.ravel()
+    coords = np.indices(ATLAS.shape).reshape(3, -1).T
+    for label in range(1, len(REGION_NAMES)):
+        found = coords[flat == label]
+        voxels[label] = len(found)
+        if len(found):
+            centroids[label] = found.mean(axis=0) * ATLAS_SCALE + ATLAS_ORIGIN
+    # cube root so marker size tracks linear extent - Isocortex has 14x the volume of
+    # Cortical subplate but should not be 14x the marker
+    radii = np.cbrt(np.where(voxels > 0, voxels, np.nan))
+    spread = np.nanmax(radii) - np.nanmin(radii)
+    sizes = 8 + 22 * (radii - np.nanmin(radii)) / spread
+    return centroids, np.nan_to_num(sizes)
+
+
+def _brain_shell(block=6):
+    inside = np.argwhere(ATLAS > 0)
+    low, high = inside.min(axis=0), inside.max(axis=0) + 1
+    cropped = (ATLAS[low[0] : high[0], low[1] : high[1], low[2] : high[2]] > 0).astype(np.float32)
+    trimmed = cropped[
+        : cropped.shape[0] // block * block,
+        : cropped.shape[1] // block * block,
+        : cropped.shape[2] // block * block,
+    ]
+    # averaging each block leaves partial occupancy at the edges, which is what lets
+    # marching cubes interpolate a smooth surface rather than voxel stair-steps
+    occupancy = trimmed.reshape(
+        trimmed.shape[0] // block, block,
+        trimmed.shape[1] // block, block,
+        trimmed.shape[2] // block, block,
+    ).mean(axis=(1, 3, 5))
+    grid = [
+        (np.arange(occupancy.shape[axis]) * block + low[axis]) * ATLAS_SCALE + ATLAS_ORIGIN[axis]
+        for axis in range(3)
+    ]
+    x, y, z = np.meshgrid(*grid, indexing="ij")
+    return (
+        x.ravel().astype(np.float32),
+        y.ravel().astype(np.float32),
+        z.ravel().astype(np.float32),
+        occupancy.ravel().astype(np.float32),
+    )
 
 
 def _atlas_slice(orientation, slice_index):
@@ -200,6 +250,11 @@ DEFAULT_SLICES = {name: _busiest_slice(name) for name in ORIENTATIONS}
 REGION_NAMES = np.array(
     lightsheet_df.drop_duplicates("index").sort_values("index")["name"].tolist()
 )
+REGION_CENTROIDS, REGION_SIZES = _region_geometry()
+BRAIN_SHELL = _brain_shell()
+# pinned so the view does not rescale when the shell is toggled off and the remaining
+# centroids span a much smaller box
+BRAIN_EXTENT = [[float(axis.min()), float(axis.max())] for axis in BRAIN_SHELL[:3]]
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
 app.title = "SPIMquant Dataset Explorer (Plotly/Dash Demo)"
@@ -422,6 +477,39 @@ app.layout = dbc.Container(
             className="text-muted d-block mb-2",
         ),
         dcc.Graph(id="brain-map"),
+        html.H4("3D brain", className="mt-5"),
+        dbc.Row(
+            dbc.Col(
+                [
+                    html.Label("Measurement"),
+                    dcc.Dropdown(
+                        id="brain3d-measure-dropdown",
+                        options=[{"label": m, "value": m} for m in MAP_MEASURES],
+                        value="Abeta+fieldfrac",
+                        clearable=False,
+                    ),
+                ],
+                md=6,
+            ),
+            className="mb-2",
+        ),
+        dbc.Checklist(
+            id="brain3d-shell-toggle",
+            options=[{"label": "Show brain outline", "value": "shell"}],
+            value=["shell"],
+            switch=True,
+            className="mt-2",
+        ),
+        html.Small(
+            "One sphere per brain region, placed at the centre of that region and sized "
+            "by how large it is. Colour is the same average as the map above. The "
+            "translucent grey shell is the outer surface of the atlas brain, drawn so "
+            "the spheres sit in anatomical context. A 3D surface always sits in front "
+            "of the spheres, so switch the outline off to hover a sphere for its name "
+            "and value. Drag to rotate, scroll to zoom.",
+            className="text-muted d-block mb-2",
+        ),
+        dcc.Graph(id="brain-3d"),
     ],
     className="pb-5",
 )
@@ -588,6 +676,99 @@ def update_brain_map(
         height=600,
         margin={"l": 10, "r": 10, "t": 40, "b": 10},
         title=f"Mean {measure} - {orientation} slice {slice_index}, {filtered['participant_id'].nunique()} mice",
+    )
+    return figure
+
+
+@app.callback(
+    Output("brain-3d", "figure"),
+    Input("sex-dropdown", "value"),
+    Input("genotype-dropdown", "value"),
+    Input("treatment-dropdown", "value"),
+    Input("region-dropdown", "value"),
+    Input("brain3d-measure-dropdown", "value"),
+    Input("brain3d-shell-toggle", "value"),
+)
+def update_brain_3d(
+    selected_sexes, selected_genotypes, selected_treatments, selected_regions, measure, shell_on
+):
+    filtered = _filtered_df(selected_sexes, selected_genotypes, selected_treatments, selected_regions)
+    filtered = filtered[filtered["name"] != BACKGROUND_REGION]
+    if filtered.empty:
+        return _placeholder_figure("No brain regions match the current filters.")
+
+    means = filtered.groupby("index")[measure].mean()
+    labels = means.index.to_numpy()
+    values = means.to_numpy()
+    centroids = REGION_CENTROIDS[labels]
+
+    limits = {}
+    if values.min() < values.max():
+        limits = {"cmin": values.min(), "cmax": values.max()}
+
+    hover_data = np.empty((len(labels), 2), dtype=object)
+    hover_data[:, 0] = REGION_NAMES[labels]
+    hover_data[:, 1] = values
+
+    # a closed 3D surface always absorbs the hover pick - plotly has no hittest for 3D
+    # traces - so hiding the shell is what makes the spheres hoverable
+    shell = []
+    if shell_on:
+        shell = [
+            go.Isosurface(
+                x=BRAIN_SHELL[0],
+                y=BRAIN_SHELL[1],
+                z=BRAIN_SHELL[2],
+                value=BRAIN_SHELL[3],
+                isomin=0.5,
+                isomax=1.0,
+                surface_count=1,
+                opacity=0.15,
+                showscale=False,
+                colorscale=[[0, "lightgrey"], [1, "lightgrey"]],
+                # without this plotly seals the volume at the bounding box and it reads
+                # as a slab instead of a brain
+                caps={"x_show": False, "y_show": False, "z_show": False},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        ]
+
+    figure = go.Figure(
+        shell
+        + [
+            go.Scatter3d(
+                x=centroids[:, 0],
+                y=centroids[:, 1],
+                z=centroids[:, 2],
+                mode="markers",
+                marker={
+                    "size": REGION_SIZES[labels],
+                    "color": values,
+                    "colorscale": "Viridis_r",
+                    "colorbar": {"title": measure},
+                    "opacity": 0.9,
+                    **limits,
+                },
+                # built column-wise as object dtype: np.stack would coerce the values to
+                # strings, and a numeric hovertemplate format on a string silently breaks
+                # the whole template
+                customdata=hover_data,
+                hovertemplate="%{customdata[0]}<br>" + measure + ": %{customdata[1]:.4g}<extra></extra>",
+                showlegend=False,
+            ),
+        ]
+    )
+    figure.update_layout(
+        height=650,
+        margin={"l": 0, "r": 0, "t": 40, "b": 0},
+        scene={
+            "aspectmode": "data",
+            "xaxis": {"title": "x (mm)", "range": BRAIN_EXTENT[0]},
+            "yaxis": {"title": "y (mm)", "range": BRAIN_EXTENT[1]},
+            "zaxis": {"title": "z (mm)", "range": BRAIN_EXTENT[2]},
+        },
+        title=f"Mean {measure} - {filtered['participant_id'].nunique()} mice",
     )
     return figure
 
