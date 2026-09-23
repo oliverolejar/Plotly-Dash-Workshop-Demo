@@ -26,6 +26,27 @@ pixi.toml / pixi.lock     the environment
 same app pattern on a dataset everyone already understands (countries, life expectancy,
 GDP), which is easier to follow before switching to real lab data.
 
+## Setup
+
+Install [pixi](https://pixi.sh) if you don't have it:
+
+```bash
+# macOS / Linux
+curl -fsSL https://pixi.sh/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm -useb https://pixi.sh/install.ps1 | iex"
+```
+
+Restart your terminal afterwards so `pixi` is on your PATH.
+
+Then clone the repo:
+
+```bash
+git clone https://github.com/oliverolejar/Plotly-Dash-Workshop-Demo.git
+cd Plotly-Dash-Workshop-Demo
+```
+
 ## Running it
 
 ```bash
@@ -42,7 +63,6 @@ pixi run generic_app
 ```
 
 Either app starts at http://127.0.0.1:8050.
-
 ## The data
 
 One row per brain region per mouse: **28 mice × 25 Allen Brain Atlas (v3) coarse regions
